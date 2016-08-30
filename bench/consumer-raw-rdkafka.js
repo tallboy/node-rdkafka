@@ -16,11 +16,10 @@ var topic = process.argv[3] || 'test';
 
 var consumer = new Kafka.KafkaConsumer({
   'metadata.broker.list': host,
-  'group.id': 'node-rdkafka-bench',
+  'group.id': 'node-rdkafka-bench-consumer-raw-2',
   'fetch.wait.max.ms': 100,
   'fetch.message.max.bytes': 1024 * 1024,
   'enable.auto.commit': false
-  // paused: true,
 }, {
   'auto.offset.reset': 'earliest'
 });
@@ -31,16 +30,16 @@ consumer.connect()
   .once('ready', function() {
     consumer.consume([topic]);
   })
-  .on('rebalance', function() {
-    console.log('rebalance');
-  })
   .once('data', function() {
     interval = setInterval(function() {
-      console.log('%d messages per second', count);
       if (count > 0) {
+        console.log('%d messages per second', count);
         store.push(count);
+        count = 0;
+      } else {
+        clearInterval(interval);
+        shutdown();
       }
-      count = 0;
     }, 1000);
   })
   .on('data', function(message) {
@@ -53,7 +52,6 @@ process.once('SIGINT', shutdown);
 process.once('SIGHUP', shutdown);
 
 function shutdown() {
-  clearInterval(interval);
 
   if (store.length > 0) {
     var calc = 0;
@@ -63,17 +61,11 @@ function shutdown() {
 
     var mps = parseFloat(calc * 1.0/store.length);
 
-    console.log('%d messages per second on average', mps);
+    console.log('%d messages per second on average', Math.round(mps));
 
   }
 
-  var killTimer = setTimeout(function() {
-    process.exit();
-  }, 5000);
-
-  consumer.disconnect(function() {
-    clearTimeout(killTimer);
-    process.exit();
-  });
+  consumer.disconnect();
+  process.exit(0);
 
 }

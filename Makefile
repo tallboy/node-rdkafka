@@ -24,7 +24,7 @@ ifeq ($(BUILDTYPE),Debug)
 GYPBUILDARGS=--debug
 endif
 
-.PHONY: all clean lint test lib docs e2e ghpages
+.PHONY: all clean lint test lib docs e2e ghpages bench
 
 all: lint lib test e2e
 
@@ -52,6 +52,9 @@ test: node_modules/.dirstamp
 e2e: $(E2E_TESTS)
 	@$(NODE) e2e/consumer.spec.js && $(NODE) e2e/producer.spec.js && $(NODE) e2e/both.spec.js
 
+bench: node_modules/.dirstamp
+	@$(NODE) bench/producer-raw-rdkafka.js && $(NODE) bench/producer-rdkafka.js && \
+	 $(NODE) bench/consumer-raw-rdkafka.js && $(NODE) bench/consumer-rdkafka.js
 
 define release
 	NEXT_VERSION=$(shell node -pe 'require("semver").inc("$(VERSION)", "$(1)")')

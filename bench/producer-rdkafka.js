@@ -16,11 +16,10 @@ var store = [];
 var host = process.argv[2] || '127.0.0.1:9092';
 var topicName = process.argv[3] || 'test';
 var compression = process.argv[4] || 'gzip';
-var MAX = process.argv[5] || 100000;
+var MAX = process.argv[5] || 1000000;
 
 var producer = new Kafka.Producer({
   'metadata.broker.list': host,
-  'group.id': 'node-rdkafka-bench',
   'compression.codec': compression,
   'retry.backoff.ms': 200,
   'message.send.max.retries': 10,
@@ -29,6 +28,28 @@ var producer = new Kafka.Producer({
   'queue.buffering.max.ms': 1000,
   'batch.num.messages': 1000,
 });
+
+var interval;
+var ok = true;
+
+function getTimer() {
+  if (!interval) {
+    interval = setTimeout(function() {
+      interval = false;
+      if (!done) {
+        console.log('%d messages per sent second', count);
+        store.push(count);
+        count = 0;
+        getTimer();
+
+      } else {
+        console.log('%d messages remaining sent in last batch <1000ms', count);
+      }
+   }, 1000).unref();
+ }
+
+   return interval;
+}
 
 producer.on('error', function(e) {
   console.log(e);
@@ -39,13 +60,11 @@ producer.on('error', function(e) {
 var interval;
 var done = false;
 
-function log() {
-  console.log('%d messages per sent second', count);
-  store.push(count);
-  count = 0;
-}
+console.log('Running benchmark for producer stream API');
 
 crypto.randomBytes(4096, function(ex, buffer) {
+
+  getTimer();
 
   var stream = producer.getWriteStream(topicName);
 
@@ -57,8 +76,7 @@ crypto.randomBytes(4096, function(ex, buffer) {
     totalComplete += 1;
     if (totalComplete >= MAX && !done) {
       done = true;
-      clearInterval(interval);
-      setTimeout(shutdown, 5000);
+      shutdown();
     }
   };
 
@@ -77,7 +95,7 @@ crypto.randomBytes(4096, function(ex, buffer) {
   }
 
   write();
-  interval = setInterval(log, 1000);
+
   stream.on('error', function(err) {
     console.log(err);
   });
@@ -105,16 +123,7 @@ function shutdown() {
 
   }
 
-  clearInterval(interval);
-
-  var killTimer = setTimeout(function() {
-    process.exit();
-  }, 5000);
-
-  producer.disconnect(function() {
-    clearTimeout(killTimer);
-    console.log('total: %d', total);
-    process.exit();
-  });
+  producer.disconnect();
+  process.exit(0);
 
 }

@@ -14,15 +14,14 @@ var count = 0;
 var total = 0;
 var store = [];
 var host = process.argv[2] || 'localhost:9092';
-var topic = process.argv[3] || 'telemetry-v2-ingest';
+var topic = process.argv[3] || 'test';
 
 var consumer = new Kafka.KafkaConsumer({
   'metadata.broker.list': host,
-  'group.id': 'node-rdkafka-bench',
+  'group.id': 'node-rdkafka-bench-consumer',
   'fetch.wait.max.ms': 100,
   'fetch.message.max.bytes': 1024 * 1024,
   'enable.auto.commit': false
-  // paused: true,
 }, {
   'auto.offset.reset': 'earliest'
 });
@@ -31,20 +30,21 @@ var consumer = new Kafka.KafkaConsumer({
 var interval;
 
 consumer.on('rebalance', function() {
-  console.log('Consumer has been rebalanced');
   interval = setInterval(function() {
-    if (isShuttingDown) {
-      clearInterval(interval);
-    }
-    console.log('%d messages per second', count);
     if (count > 0) {
       // Don't store ones when we didn't get data i guess?
       store.push(count);
-      // setTimeout(shutdown, 500);
+      count = 0;
+      console.log('%d messages per second', count);
+    } else {
+      // We are done.
+      shutdown();
+      clearInterval(interval);
     }
-   count = 0;
- }, 1000).unref();
+  }, 1000).unref();
 });
+
+console.log('Running consumer stream API benchmarks');
 
 var stream = consumer.getReadStream(topic, {
   fetchSize: 16
@@ -58,8 +58,6 @@ stream
     shutdown();
   })
   .on('end', function() {
-    // Can be called more than once without issue because of guard var
-    console.log('Shutting down due to stream end');
     shutdown();
   })
   .pipe(new Writable({
@@ -81,9 +79,11 @@ process.once('SIGINT', shutdown);
 process.once('SIGHUP', shutdown);
 
 function shutdown() {
-  if (isShuttingDown) return;
-  clearInterval(interval);
+  if (isShuttingDown) {
+    return;
+  }
   isShuttingDown = true;
+
   if (store.length > 0) {
     var calc = 0;
     for (var x in store) {
@@ -92,15 +92,10 @@ function shutdown() {
 
     var mps = parseFloat(calc * 1.0/store.length);
 
-    console.log('%d messages per second on average', mps);
+    console.log('%d messages per second on average', Math.round(mps));
   }
 
-  var killTimer = setTimeout(function() {
-    process.exit();
-  }, 5000).unref();
-
-  consumer.disconnect(function() {
-    console.log('total: %d', total);
-  });
+  consumer.disconnect();
+  process.exit(0);
 
 }

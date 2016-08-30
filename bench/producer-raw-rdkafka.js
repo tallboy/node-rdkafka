@@ -20,11 +20,10 @@ var done = false;
 var host = process.argv[2] || '127.0.0.1:9092';
 var topicName = process.argv[3] || 'test';
 var compression = process.argv[4] || 'gzip';
-var MAX = process.argv[5] || 100000;
+var MAX = process.argv[5] || 1000000;
 
 var producer = new Kafka.Producer({
   'metadata.broker.list': host,
-  'group.id': 'node-rdkafka-bench',
   'compression.codec': compression,
   'retry.backoff.ms': 200,
   'message.send.max.retries': 10,
@@ -32,7 +31,6 @@ var producer = new Kafka.Producer({
   'queue.buffering.max.messages': 100000,
   'queue.buffering.max.ms': 1000,
   'batch.num.messages': 1000,
-  // paused: true,
 });
 
 // Track how many messages we see per second
@@ -40,7 +38,7 @@ var interval;
 var ok = true;
 
 function getTimer() {
-  if (!interval)
+  if (!interval) {
     interval = setTimeout(function() {
       interval = false;
       if (!done) {
@@ -52,12 +50,15 @@ function getTimer() {
       } else {
         console.log('%d messages remaining sent in last batch <1000ms', count);
       }
-   }, 1000);
+   }, 1000).unref();
+ }
 
    return interval;
 }
 
 var t;
+
+console.log('Running benchmark for raw producer API');
 
 crypto.randomBytes(4096, function(ex, buffer) {
 
@@ -111,22 +112,15 @@ process.once('SIGHUP', shutdown);
 function shutdown(e) {
   done = true;
 
-  clearInterval(interval);
+  var ended = new Date().getTime();
+  var elapsed = ended - started;
 
-  var killTimer = setTimeout(function() {
-    process.exit();
-  }, 5000);
+  // console.log('Ended %s', ended);
+  console.log('total: %d messages over %d ms', total, elapsed);
 
-  producer.disconnect(function() {
-    clearTimeout(killTimer);
-    var ended = new Date().getTime();
-    var elapsed = ended - started;
+  console.log('%d messages / second', parseInt(total / (elapsed / 1000)));
 
-    // console.log('Ended %s', ended);
-    console.log('total: %d messages over %d ms', total, elapsed);
-
-    console.log('%d messages / second', parseInt(total / (elapsed / 1000)));
-    process.exit();
-  });
+  producer.disconnect();
+  process.exit(0);
 
 }
