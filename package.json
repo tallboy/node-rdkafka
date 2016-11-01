@@ -1,5 +1,5 @@
 {
-  "name": "node-rdkafka",
+  "name": "@2net/node-rdkafka",
   "version": "0.5.5",
   "description": "Node.js bindings for librdkafka",
   "main": "lib/index.js",
@@ -13,19 +13,9 @@
     "librdkafka"
   ],
   "repository": {
-    "type": "git",
-    "url": "git@github.com:Blizzard/node-rdkafka.git"
+    "type": "http",
+    "url": "http://qcltfs:8080/tfs/QCL/2netCentral/_git/node-rdkafka"
   },
-  "contributors": [
-    {
-      "name": "Stephen Parente",
-      "email": "webmakersteve@gmail.com"
-    },
-    {
-      "name": "Matt Gollob",
-      "email": "mattness@users.noreply.github.com"
-    }
-  ],
   "license": "MIT",
   "devDependencies": {
     "jshint": "2.x",
