@@ -1,8 +1,7 @@
 {
   "variables": {
       # may be redefined in command line on configuration stage
-      "BUILD_LIBRDKAFKA%": "<!(echo ${BUILD_LIBRDKAFKA:-1})",
-      "WITH_SASL%": "<!(echo ${WITH_SASL:-1})"
+      "BUILD_LIBRDKAFKA%": "<!(echo ${BUILD_LIBRDKAFKA:-1})"
   },
   "targets": [
     {
@@ -61,20 +60,6 @@
                 '-std=c++11'
               ],
             },
-          }
-        ],
-        [ "<(WITH_SASL)==1",
-          {
-            'libraries' : ['-lsasl2'],
-            'conditions': [
-              [ 'OS=="mac"',
-                {
-                  'xcode_settings': {
-                    'libraries' : ['-lsasl2']
-                  }
-                }
-              ],
-            ]
           }
         ]
       ]

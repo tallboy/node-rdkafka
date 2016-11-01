@@ -1,7 +1,4 @@
 {
-  'variables': {
-    "WITH_SASL%": "<!(echo ${WITH_SASL:-1})"
-  },
   'targets': [
     {
       "target_name": "librdkafka_cpp",
@@ -126,13 +123,6 @@
               }
             },
           }
-        ],
-        [ "<(WITH_SASL)==1",
-          {
-            'sources': [
-              'librdkafka/src/rdkafka_sasl.c'
-            ]
-          }
         ]
       ],
       'sources': [
@@ -183,16 +173,7 @@
           "conditions": [
             [ 'OS!="win"',
               {
-                "conditions": [
-                  [ "<(WITH_SASL)==1",
-                    {
-                      'action': ['eval', 'cd librdkafka && chmod a+x ./configure && ./configure']
-                    },
-                    {
-                      'action': ['eval', 'cd librdkafka && chmod a+x ./configure && ./configure --disable-sasl']
-                    }
-                  ]
-                ]
+                'action': ['eval', 'cd librdkafka && chmod a+x ./configure && ./configure --disable-sasl']
               },
               {
                 'action': ['echo']
