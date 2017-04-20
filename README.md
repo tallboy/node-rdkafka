@@ -12,7 +12,7 @@ Copyright (c) 2016 Blizzard Entertainment.
 
 The `node-rdkafka` library is a high-performance NodeJS client for [Apache Kafka](http://kafka.apache.org/) that wraps the native  [librdkafka](https://github.com/edenhill/librdkafka) library.  All the complexity of balancing writes across partitions and managing (possibly ever-changing) brokers should be encapsulated in the library.
 
-__This library currently uses `librdkafka` version `0.9.1`.__
+__This library currently uses `librdkafka` version `0.9.4`.__
 
 ## Reference Docs
 
@@ -62,7 +62,7 @@ var Kafka = require('node-rdkafka');
 
 ## Configuration
 
-You can pass many configuration options to `librdkafka`.  A full list can be found in `librdkafka`'s [Configuration.md](https://github.com/edenhill/librdkafka/blob/2213fb29f98a7a73f22da21ef85e0783f6fd67c4/CONFIGURATION.md)
+You can pass many configuration options to `librdkafka`.  A full list can be found in `librdkafka`'s [Configuration.md](https://github.com/edenhill/librdkafka/blob/0.9.4.x/CONFIGURATION.md)
 
 Configuration keys that have the suffix `_cb` are designated as callbacks. Some
 of these keys are informational and you can choose to opt-in (for example, `dr_cb`). Others are callbacks designed to
@@ -73,7 +73,7 @@ The library will throw an error if the value you send in is invalid.
 
 The library currently supports the following callbacks:
 * `partitioner_cb`
-* `dr_cb`
+* `dr_cb` or `dr_msg_cb`
 * `event_cb`
 
 ### SASL Support
@@ -93,7 +93,7 @@ var producer = new Kafka.Producer({
 });
 ```
 
-A `Producer` requires only `metadata.broker.list` (the Kafka brokers) to be created.  The values in this list are separated by commas.  For other configuration options, see the [Configuration.md](https://github.com/edenhill/librdkafka/blob/2213fb29f98a7a73f22da21ef85e0783f6fd67c4/CONFIGURATION.md) file described previously.  
+A `Producer` requires only `metadata.broker.list` (the Kafka brokers) to be created.  The values in this list are separated by commas.  For other configuration options, see the [Configuration.md](https://github.com/edenhill/librdkafka/blob/0.9.4.x/CONFIGURATION.md) file described previously.
 
 The following example illustrates a list with several `librdkafka` options set.
 
@@ -174,6 +174,11 @@ producer.on('ready', function() {
       new Buffer('Awesome message'),
       // for keyed messages, we also specify the key - note that this field is optional
       'Stormwind',
+      // you can send a timestamp here. If your broker version supports it,
+      // it will get added. Otherwise, we default to 0
+      Date.now(),
+      // you can send an opaque token here, which gets passed along
+      // to your delivery reports
     );
   } catch (err) {
     console.error('A problem occurred when sending our message');
@@ -182,7 +187,7 @@ producer.on('ready', function() {
 });
 
 // Any errors we encounter, including connection errors
-producer.on('error', function(err) {
+producer.on('event.error', function(err) {
   console.error('Error from producer');
   console.error(err);
 })
@@ -196,8 +201,10 @@ To see the configuration options available to you, see the [Configuration](#conf
 |-------|----------|
 |`producer.connect()`| Connects to the broker. <br><br> The `connect()` method emits the `ready` event when it connects successfully or an `error` when it does not.|
 |`producer.disconnect()`| Disconnects from the broker. <br><br>The `disconnect()` method emits the `disconnected` event when it has disconnected or `error` if something went wrong. |
-|`producer.poll()` | Polls the producer for delivery reports or other events to be transmitted via the emitter. <br><br>This happens automatically on transactions such as `produce`. |
+|`producer.poll()` | Polls the producer for delivery reports or other events to be transmitted via the emitter. <br><br>In order to get the events in `librdkafka`'s queue to emit, you must call this regularly. |
+|`producer.setPollInterval(interval)` | Polls the producer on this interval, handling disconnections and reconnection. Set it to 0 to turn it off. |
 |`producer.produce(topic, partition, msg, key)`| Sends a message. <br><br>The `produce()` method throws when produce would return an error. Ordinarily, this is just if the queue is full. |
+|`producer.flush(timeout, callback)`| Flush the librdkafka internal queue, sending all messages. Default timeout is 500ms |
 
 ##### Events
 
@@ -215,7 +222,10 @@ var producer = new Kafka.Producer({
   'dr_cb': true // Specifies that we want a delivery-report event to be generated
 });
 
-producer.on('delivery-report', function(report) {
+// Poll for events every 100 ms
+producer.setPollInterval(100);
+
+producer.on('delivery-report', function(err, report) {
   // Report of delivery statistics here:
   //
   console.log(report);
@@ -231,9 +241,10 @@ The following table describes types of events.
 | `ready` | The `ready` event is emitted when the `Producer` is ready to send messages. |
 | `event` | The `event` event is emitted when `librdkafka` reports an event (if you opted in via the `event_cb` option). |
 | `event.log` | The `event.log` event is emitted when logging events come in (if you opted into logging via the `event_cb` option). <br><br>You will need to set a value for `debug` if you want to send information. |
-| `event.status` | The  `event.status` event is emitted when `librdkafka` reports stats (if you opted in). |
+| `event.stats` | The  `event.stats` event is emitted when `librdkafka` reports stats (if you opted in). |
+| `event.error` | The  `event.error` event is emitted when `librdkafka` reports an error |
 | `event.throttle` | The `event.throttle` event emitted  when `librdkafka` reports throttling. |
-| `delivery-report` | The `delivery-report` event is emitted when a delivery report has been found via polling. <br><br>To use this event, you must set `request.required.acks` to `1` or `-1` in topic configuration and `dr_cb` to `true` in the `Producer` constructor options. |
+| `delivery-report` | The `delivery-report` event is emitted when a delivery report has been found via polling. <br><br>To use this event, you must set `request.required.acks` to `1` or `-1` in topic configuration and `dr_cb` (or `dr_msg_db` if you want the report to contain the message payload) to `true` in the `Producer` constructor options. |
 
 ## Kafka.KafkaConsumer
 
@@ -279,7 +290,7 @@ Messages that are returned by the `KafkaConsumer` have the following structure.
 
 ```js
 {
-  message: new Buffer('hi'), // message contents as a Buffer
+  value: new Buffer('hi'), // message contents as a Buffer
   size: 2, // size of the message, in bytes
   topic: 'librdtesting-01', // topic the message comes from
   offset: 1337, // offset the message was read from
@@ -316,10 +327,12 @@ consumer.connect();
 
 consumer
   .on('ready', function() {
+    consumer.subscribe(['librdtesting-01']);
+
     // Consume from the librdtesting-01 topic. This is what determines
-    // the mode we are running in. By consuming an entire topic,
-    // we will get messages from that topic as soon as they are available
-    consumer.consume('librdtesting-01');
+    // the mode we are running in. By not specifying a callback (or specifying
+    // only a callback) we get messages as soon as they are available.
+    consumer.consume();
   })
   .on('data', function(data) {
     // Output the actual message contents
@@ -335,11 +348,11 @@ consumer
   .on('ready', function() {
     // Subscribe to the librdtesting-01 topic
     // This makes subsequent consumes read from that topic.
-    consumer.subscribe('librdtesting-01');
+    consumer.subscribe(['librdtesting-01']);
 
     // Read one message every 1000 seconds
     setInterval(function() {
-      consumer.consume();
+      consumer.consume(1);
     }, 1000);
   })
   .on('data', function(data) {
@@ -354,10 +367,10 @@ The following table lists important methods for this API.
 |-------|----------|
 |`consumer.connect()` | Connects to the broker. <br><br>The `connect()` emits the event `ready` when it has successfully connected, or an `error` when it has not. |
 |`consumer.disconnect()` | Disconnects from the broker. <br><br>The `disconnect()` method emits `disconnected` when it has disconnected or `error` if something went wrong.
-|`consumer.subscribe(topics)` | Subscribes to an array of topics. <br><br> `topics` can be either an array or a string for a single topic. |
+|`consumer.subscribe(topics)` | Subscribes to an array of topics. |
 |`consumer.unsubscribe()` | Unsubscribes from the currently subscribed topics. <br><br>You cannot subscribe to different topics without calling the `unsubscribe()` method first. |
-|`consumer.consume(cb)` | Gets a message from the existing subscription. If `cb` is specified, invokes `cb(err, message)`. |
-|`consumer.consume(topics, cb)` | Creates a subscription and get messages as they become available.<br><br>The `consume()` method keeps a background thread running to do the work. If `cb` is specified, invokes `cb(err, message)`. |
+|`consumer.consume(cb)` | Gets messages from the existing subscription as quickly as possible. This method keeps a background thread running to do the work. If `cb` is specified, invokes `cb(err, message)`. |
+|`consumer.consume(number, cb)` | Gets `number` of messages from the existing subscription. If `cb` is specified, invokes `cb(err, message)`. |
 
 The following table lists events for this API.
 
@@ -368,7 +381,7 @@ The following table lists events for this API.
 |`ready` | The `ready` event is emitted when the `Producer` is ready to send messages. |
 |`event` | The `event` event is emitted when `librdkafka` reports an event (if you opted in via the `event_cb` option).|
 |`event.log` | The `event.log` event is emitted when logging events occur (if you opted in for logging  via the `event_cb` option).<br><br> You will need to set a value for `debug` if you want information to send. |
-|`event.status` | The `event.status` event is emitted when `librdkafka` reports stats (if you opted in). |
+|`event.stats` | The `event.stats` event is emitted when `librdkafka` reports stats (if you opted in). |
 |`event.throttle` | The `event.throttle` event is emitted when `librdkafka` reports throttling.|
 
 ## Metadata
@@ -405,6 +418,9 @@ Getting metadata on any connection returns the following data structure:
 ```
 
 The following example illustrates how to use the `getMetadata` method.
+
+When fetching metadata for a specific topic, if a topic reference does not exist, one is created using the default config.
+Please see the documentation on `Client.getMetadata` if you want to set configuration parameters, e.g. `acks`, on a topic to produce messages to.
 
 ```js
 var opts = {

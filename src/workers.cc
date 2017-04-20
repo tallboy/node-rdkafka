@@ -43,7 +43,7 @@ void ConnectionMetadata::Execute() {
     // the string to create the object
     m_metadata = b.data<RdKafka::Metadata*>();
   } else {
-    SetErrorCode(b.err());
+    SetErrorBaton(b);
   }
 }
 
@@ -89,7 +89,7 @@ void ProducerConnect::Execute() {
   Baton b = producer->Connect();
 
   if (b.err() != RdKafka::ERR_NO_ERROR) {
-    SetErrorCode(b.err());
+    SetErrorBaton(b);
   }
 }
 
@@ -119,6 +119,12 @@ void ProducerConnect::HandleErrorCallback() {
   callback->Call(argc, argv);
 }
 
+/**
+ * @brief Producer disconnect worker
+ *
+ * Easy Nan::AsyncWorker for disconnecting from clients
+ */
+
 ProducerDisconnect::ProducerDisconnect(Nan::Callback *callback,
   Producer* producer):
   ErrorAwareWorker(callback),
@@ -145,6 +151,41 @@ void ProducerDisconnect::HandleOKCallback() {
 void ProducerDisconnect::HandleErrorCallback() {
   // This should never run
   assert(0);
+}
+
+/**
+ * @brief Producer flush worker
+ *
+ * Easy Nan::AsyncWorker for flushing a producer.
+ */
+
+ProducerFlush::ProducerFlush(Nan::Callback *callback,
+  Producer* producer, int timeout_ms):
+  ErrorAwareWorker(callback),
+  producer(producer),
+  timeout_ms(timeout_ms) {}
+
+ProducerFlush::~ProducerFlush() {}
+
+void ProducerFlush::Execute() {
+  if (!producer->IsConnected()) {
+    SetErrorMessage("Producer is disconnected");
+    return;
+  }
+
+  Baton b = producer->Flush(timeout_ms);
+  if (b.err() != RdKafka::ErrorCode::ERR_NO_ERROR) {
+    SetErrorBaton(b);
+  }
+}
+
+void ProducerFlush::HandleOKCallback() {
+  Nan::HandleScope scope;
+
+  const unsigned int argc = 1;
+  v8::Local<v8::Value> argv[argc] = { Nan::Null() };
+
+  callback->Call(argc, argv);
 }
 
 /**
@@ -216,7 +257,7 @@ void ConsumerDisconnect::Execute() {
   Baton b = consumer->Disconnect();
 
   if (b.err() != RdKafka::ERR_NO_ERROR) {
-    SetErrorCode(b.err());
+    SetErrorBaton(b);
   }
 }
 
@@ -268,7 +309,8 @@ ConsumerConsumeLoop::ConsumerConsumeLoop(Nan::Callback *callback,
                                      const int & timeout_ms) :
   MessageWorker(callback),
   consumer(consumer),
-  m_timeout_ms(timeout_ms) {}
+  m_timeout_ms(timeout_ms),
+  m_rand_seed(time(NULL)) {}
 
 ConsumerConsumeLoop::~ConsumerConsumeLoop() {}
 
@@ -281,8 +323,12 @@ void ConsumerConsumeLoop::Execute(const ExecutionMessageBus& bus) {
       // EOF means there are no more messages to read.
       // We should wait a little bit for more messages to come in
       // when in consume loop mode
-      usleep(1000*1000);
-    } else if (b.err() == RdKafka::ERR__TIMED_OUT) {
+      // Randomise the wait time to avoid contention on different
+      // slow topics
+      usleep(static_cast<int>(rand_r(&m_rand_seed) * 1000 * 1000 / RAND_MAX));
+    } else if (
+      b.err() == RdKafka::ERR__TIMED_OUT ||
+      b.err() == RdKafka::ERR__TIMED_OUT_QUEUE) {
       // If it is timed out this could just mean there were no
       // new messages fetched quickly enough. This isn't really
       // an error that should kill us.
@@ -291,7 +337,7 @@ void ConsumerConsumeLoop::Execute(const ExecutionMessageBus& bus) {
       bus.Send(b.data<RdKafka::Message*>());
     } else {
       // Unknown error. We need to break out of this
-      SetErrorMessage(b.errstr().c_str());
+      SetErrorBaton(b);
       break;
     }
   }
@@ -355,8 +401,11 @@ void ConsumerConsumeNum::Execute() {
     Baton b = m_consumer->Consume(m_timeout_ms);
     if (b.err() != RdKafka::ERR_NO_ERROR) {
       if (b.err() != RdKafka::ERR__TIMED_OUT &&
-          b.err() != RdKafka::ERR__PARTITION_EOF) {
-        SetErrorBaton(b);
+          b.err() != RdKafka::ERR__PARTITION_EOF &&
+          b.err() != RdKafka::ERR__TIMED_OUT_QUEUE) {
+        if (i == 0) {
+          SetErrorBaton(b);
+        }
       }
       break;
     }
@@ -431,7 +480,8 @@ void ConsumerConsume::Execute() {
   Baton b = consumer->Consume(m_timeout_ms);
   if (b.err() != RdKafka::ERR_NO_ERROR) {
     if (b.err() != RdKafka::ERR__TIMED_OUT ||
-      b.err() != RdKafka::ERR__PARTITION_EOF) {
+      b.err() != RdKafka::ERR__PARTITION_EOF ||
+      b.err() != RdKafka::ERR__TIMED_OUT_QUEUE) {
       SetErrorBaton(b);
     }
   } else {
@@ -509,58 +559,6 @@ void ConsumerCommitted::HandleErrorCallback() {
 
   const unsigned int argc = 1;
   v8::Local<v8::Value> argv[argc] = { GetErrorObject() };
-
-  callback->Call(argc, argv);
-}
-
-// Commit
-
-ConsumerCommit::ConsumerCommit(Nan::Callback *callback,
-                                     Consumer* consumer,
-                                     consumer_commit_t config) :
-  ErrorAwareWorker(callback),
-  consumer(consumer),
-  m_conf(config) {
-    committing_message = true;
-  }
-
-ConsumerCommit::ConsumerCommit(Nan::Callback *callback,
-                                     Consumer* consumer) :
-  ErrorAwareWorker(callback),
-  consumer(consumer) {
-    committing_message = false;
-  }
-
-ConsumerCommit::~ConsumerCommit() {}
-
-void ConsumerCommit::Execute() {
-  Baton b(NULL);
-
-  if (committing_message) {
-    b = consumer->Commit(m_conf.m_topic_name, m_conf.m_partition, m_conf.m_offset);  // NOLINT
-  } else {
-    b = consumer->Commit();
-  }
-
-  if (b.err() != RdKafka::ERR_NO_ERROR) {
-    SetErrorCode(b.err());
-  }
-}
-
-void ConsumerCommit::HandleOKCallback() {
-  Nan::HandleScope scope;
-
-  const unsigned int argc = 1;
-  v8::Local<v8::Value> argv[argc] = { Nan::Null() };
-
-  callback->Call(argc, argv);
-}
-
-void ConsumerCommit::HandleErrorCallback() {
-  Nan::HandleScope scope;
-
-  const unsigned int argc = 1;
-  v8::Local<v8::Value> argv[argc] = { Nan::Error(ErrorMessage()) };
 
   callback->Call(argc, argv);
 }

@@ -38,10 +38,12 @@ class Dispatcher {
   void Execute();
   void Activate();
   void Deactivate();
+
  protected:
   std::vector<v8::Persistent<v8::Function, v8::CopyablePersistentTraits<v8::Function> > > callbacks;  // NOLINT
 
   uv_mutex_t async_lock;
+
  private:
   NAN_INLINE static NAUV_WORK_CB(AsyncMessage_) {
      Dispatcher *dispatcher =
@@ -85,7 +87,13 @@ class Event : public RdKafka::EventCb {
   EventDispatcher dispatcher;
 };
 
-struct delivery_report_t {
+class DeliveryReport {
+ public:
+  DeliveryReport(RdKafka::Message &, bool);
+  ~DeliveryReport();
+
+  bool m_include_payload;
+
   // If it is an error these will be set
   bool is_error;
   std::string error_string;
@@ -95,10 +103,13 @@ struct delivery_report_t {
   std::string topic_name;
   int32_t partition;
   int64_t offset;
+
+  bool m_key_is_null;
   std::string key;
 
-  explicit delivery_report_t(RdKafka::Message &);
-  ~delivery_report_t();
+  size_t len;
+  void* opaque;
+  void* payload;
 };
 
 class DeliveryReportDispatcher : public Dispatcher {
@@ -106,9 +117,10 @@ class DeliveryReportDispatcher : public Dispatcher {
   DeliveryReportDispatcher();
   ~DeliveryReportDispatcher();
   void Flush();
-  void Add(const delivery_report_t &);
+  void Add(const DeliveryReport &);
+  void AddCallback(v8::Local<v8::Function>);
  protected:
-  std::vector<delivery_report_t> events;
+  std::vector<DeliveryReport> events;
 };
 
 class Delivery : public RdKafka::DeliveryReportCb {
@@ -117,6 +129,9 @@ class Delivery : public RdKafka::DeliveryReportCb {
   ~Delivery();
   void dr_cb(RdKafka::Message&);
   DeliveryReportDispatcher dispatcher;
+  void SendMessageBuffer(bool dr_copy_payload);
+ protected:
+  bool m_dr_msg_cb;
 };
 
 // Rebalance dispatcher

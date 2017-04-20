@@ -83,6 +83,8 @@ void Producer::Init(v8::Local<v8::Object> exports) {
   Nan::SetPrototypeMethod(tpl, "setPartitioner", NodeSetPartitioner);
   Nan::SetPrototypeMethod(tpl, "produce", NodeProduce);
 
+  Nan::SetPrototypeMethod(tpl, "flush", NodeFlush);
+
     // connect. disconnect. resume. pause. get meta data
   constructor.Reset(tpl->GetFunction());
 
@@ -163,12 +165,14 @@ Baton Producer::Connect() {
   }
 
   std::string errstr;
-
-  m_client = RdKafka::Producer::create(m_gconfig, errstr);
+  {
+    scoped_shared_read_lock lock(m_connection_lock);
+    m_client = RdKafka::Producer::create(m_gconfig, errstr);
+  }
 
   if (!m_client) {
     // @todo implement errstr into this somehow
-    return Baton(RdKafka::ERR__STATE);
+    return Baton(RdKafka::ERR__STATE, errstr);
   }
 
   return Baton(RdKafka::ERR_NO_ERROR);
@@ -186,8 +190,7 @@ void Producer::DeactivateDispatchers() {
 
 void Producer::Disconnect() {
   if (IsConnected()) {
-    scoped_mutex_lock lock(m_connection_lock);
-    // @todo look at hanging
+    scoped_shared_write_lock lock(m_connection_lock);
     delete m_client;
     m_client = NULL;
   }
@@ -207,17 +210,68 @@ void Producer::Disconnect() {
  * @return - A baton object with error code set if it failed.
  */
 Baton Producer::Produce(void* message, size_t size, RdKafka::Topic* topic,
-  int32_t partition, std::string *key) {
+  int32_t partition, std::string *key, void* opaque) {
   RdKafka::ErrorCode response_code;
 
+  // Key
+
   if (IsConnected()) {
-    scoped_mutex_lock lock(m_connection_lock);
+    scoped_shared_read_lock lock(m_connection_lock);
     if (IsConnected()) {
       RdKafka::Producer* producer = dynamic_cast<RdKafka::Producer*>(m_client);
       response_code = producer->produce(topic, partition,
-            RdKafka::Producer::RK_MSG_COPY, message, size, key, NULL);
+            RdKafka::Producer::RK_MSG_COPY,
+            message, size, key, opaque);
+    } else {
+      response_code = RdKafka::ERR__STATE;
+    }
+  } else {
+    response_code = RdKafka::ERR__STATE;
+  }
 
-      Poll();
+  // These topics actually link to the configuration
+  // they are made from. It's so we can reuse topic configurations
+  // That means if we delete it here and librd thinks its still linked,
+  // producing to the same topic will try to reuse it and it will die.
+  //
+  // Honestly, we may need to make configuration a first class object
+  // @todo(Conf needs to be a first class object that is passed around)
+  // delete topic;
+
+  if (response_code != RdKafka::ERR_NO_ERROR) {
+    return Baton(response_code);
+  }
+
+  return Baton(RdKafka::ERR_NO_ERROR);
+}
+
+/**
+ * [Producer::Produce description]
+ * @param message - pointer to the message we are sending. This method will
+ * create a copy of it, so you are still required to free it when done.
+ * @param size - size of the message. We are copying the memory so we need
+ * the size
+ * @param topic - String topic to use so we do not need to create
+ * an RdKafka::Topic*
+ * @param partition - partition to send it to. Send in
+ * RdKafka::Topic::PARTITION_UA to send to an unassigned topic
+ * @param key - a string pointer for the key, or null if there is none.
+ * @return - A baton object with error code set if it failed.
+ */
+Baton Producer::Produce(void* message, size_t size, std::string topic,
+  int32_t partition, std::string *key, int64_t timestamp, void* opaque) {
+  RdKafka::ErrorCode response_code;
+
+  if (IsConnected()) {
+    scoped_shared_read_lock lock(m_connection_lock);
+    if (IsConnected()) {
+      RdKafka::Producer* producer = dynamic_cast<RdKafka::Producer*>(m_client);
+      // This one is a bit different
+      response_code = producer->produce(topic, partition,
+            RdKafka::Producer::RK_MSG_COPY,
+            message, size,
+            key ? key->c_str() : NULL, key ? key->size() : 0,
+            timestamp, opaque);
     } else {
       response_code = RdKafka::ERR__STATE;
     }
@@ -268,13 +322,10 @@ NAN_METHOD(Producer::NodeProduce) {
   Nan::HandleScope scope;
 
   // Need to extract the message data here.
-  if (info.Length() < 3 || !info[0]->IsObject()) {
+  if (info.Length() < 3) {
     // Just throw an exception
     return Nan::ThrowError("Need to specify a topic, partition, and message");
   }
-
-  // First parameter is a topic
-  Topic* topic = ObjectWrap::Unwrap<Topic>(info[0].As<v8::Object>());
 
   // Second parameter is the partition
   int32_t partition;
@@ -313,7 +364,7 @@ NAN_METHOD(Producer::NodeProduce) {
     message_buffer_data = node::Buffer::Data(message_buffer_object);
   }
 
-  // Last we have to get the key
+  // Next, get the key
   std::string * key;
 
   if (info[3]->IsNull() || info[3]->IsUndefined()) {
@@ -325,18 +376,70 @@ NAN_METHOD(Producer::NodeProduce) {
     key = new std::string(*keyUTF8);
   }
 
+  int64_t timestamp;
+
+  if (info.Length() > 4 && !info[4]->IsUndefined() && !info[4]->IsNull()) {
+    if (!info[4]->IsNumber()) {
+      return Nan::ThrowError("Timestamp must be a number");
+    }
+
+    timestamp = Nan::To<int64_t>(info[4]).FromJust();
+  } else {
+    timestamp = 0;
+  }
+
+  void* opaque = NULL;
+  // Opaque handling
+  if (info.Length() > 5 && !info[5]->IsUndefined()) {
+    // We need to create a persistent handle
+    opaque = new Nan::Persistent<v8::Value>(info[5]);
+    // To get the local from this later,
+    // v8::Local<v8::Object> object = Nan::New(persistent);
+  }
+
   Producer* producer = ObjectWrap::Unwrap<Producer>(info.This());
 
-  Baton b = producer->Produce(message_buffer_data, message_buffer_length,
-    topic->toRDKafkaTopic(), partition, key);
+  // Let the JS library throw if we need to so the error can be more rich
+  int error_code;
+
+  if (info[0]->IsString()) {
+    // Get string pointer for this thing
+    Nan::Utf8String topicUTF8(info[0]->ToString());
+    std::string topic_name(*topicUTF8);
+
+    Baton b = producer->Produce(message_buffer_data, message_buffer_length,
+     topic_name, partition, key, timestamp, opaque);
+
+    error_code = static_cast<int>(b.err());
+  } else {
+    // First parameter is a topic OBJECT
+    Topic* topic = ObjectWrap::Unwrap<Topic>(info[0].As<v8::Object>());
+
+    // Unwrap it and turn it into an RdKafka::Topic*
+    Baton topic_baton = topic->toRDKafkaTopic(producer);
+
+    if (topic_baton.err() != RdKafka::ERR_NO_ERROR) {
+      // Let the JS library throw if we need to so the error can be more rich
+      error_code = static_cast<int>(topic_baton.err());
+
+      return info.GetReturnValue().Set(Nan::New<v8::Number>(error_code));
+    }
+
+    RdKafka::Topic* rd_topic = topic_baton.data<RdKafka::Topic*>();
+
+    Baton b = producer->Produce(message_buffer_data, message_buffer_length,
+     rd_topic, partition, key, opaque);
+
+    // Delete the topic when we are done.
+    delete rd_topic;
+
+    error_code = static_cast<int>(b.err());
+  }
 
   // we can delete the key as librdkafka will take a copy of the message
   if (key) {
     delete key;
   }
-
-  // Let the JS library throw if we need to so the error can be more rich
-  int error_code = static_cast<int>(b.err());
 
   info.GetReturnValue().Set(Nan::New<v8::Number>(error_code));
 }
@@ -349,8 +452,19 @@ NAN_METHOD(Producer::NodeOnDelivery) {
     return Nan::ThrowError("Need to specify a callback");
   }
 
+  bool dr_msg_cb = false;
+
+  if (info.Length() >= 2) {
+    // We have to get the boolean
+    dr_msg_cb = Nan::To<bool>(info[1]).FromMaybe(false);
+  }
+
   Producer* producer = ObjectWrap::Unwrap<Producer>(info.This());
   v8::Local<v8::Function> cb = info[0].As<v8::Function>();
+
+  if (dr_msg_cb) {
+    producer->m_dr_cb.SendMessageBuffer(true);
+  }
 
   producer->m_dr_cb.dispatcher.AddCallback(cb);
   info.GetReturnValue().Set(Nan::True());
@@ -401,11 +515,10 @@ NAN_METHOD(Producer::NodePoll) {
   }
 }
 
-#if RD_KAFKA_VERSION > 0x00090200
 Baton Producer::Flush(int timeout_ms) {
   RdKafka::ErrorCode response_code;
   if (IsConnected()) {
-    scoped_mutex_lock lock(m_connection_lock);
+    scoped_shared_read_lock lock(m_connection_lock);
     if (IsConnected()) {
       RdKafka::Producer* producer = dynamic_cast<RdKafka::Producer*>(m_client);
       response_code = producer->flush(timeout_ms);
@@ -422,32 +535,22 @@ Baton Producer::Flush(int timeout_ms) {
 NAN_METHOD(Producer::NodeFlush) {
   Nan::HandleScope scope;
 
-  if (info.Length() < 1 || !info[0]->IsFunction()) {
+  if (info.Length() < 2 || !info[1]->IsFunction() || !info[0]->IsNumber()) {
     // Just throw an exception
-    return Nan::ThrowError("Need to specify a callback");
+    return Nan::ThrowError("Need to specify a timeout and a callback");
   }
 
-  int timeout_ms;
+  int timeout_ms = Nan::To<int>(info[0]).FromJust();
 
-  if (info[0]->IsNull() || info[0]->IsUndefined()) {
-    timeout_ms = 1000;
-  } else {
-    timeout_ms = Nan::To<int>(info[0]).FromJust();
-  }
+  v8::Local<v8::Function> cb = info[1].As<v8::Function>();
+  Nan::Callback *callback = new Nan::Callback(cb);
 
   Producer* producer = ObjectWrap::Unwrap<Producer>(info.This());
 
-  if (!producer->IsConnected()) {
-    Nan::ThrowError("Producer is disconnected");
-  } else {
-    Baton b = producer->Flush(timeout_ms);
-    if (b.err() != RdKafka::ErrorCode::ERR_NO_ERROR) {
-      return Nan::ThrowError(b.errstr().c_str());
-    }
-    info.GetReturnValue().Set(Nan::True());
-  }
+  Nan::AsyncQueueWorker(new Workers::ProducerFlush(callback, producer, timeout_ms));
+
+  info.GetReturnValue().Set(Nan::Null());
 }
-#endif
 
 NAN_METHOD(Producer::NodeDisconnect) {
   Nan::HandleScope scope;

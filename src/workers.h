@@ -32,7 +32,14 @@ class ErrorAwareWorker : public Nan::AsyncWorker {
 
   virtual void Execute() = 0;
   virtual void HandleOKCallback() = 0;
-  virtual void HandleErrorCallback() = 0;
+  void HandleErrorCallback() {
+    Nan::HandleScope scope;
+
+    const unsigned int argc = 1;
+    v8::Local<v8::Value> argv[argc] = { Nan::Error(ErrorMessage()) };
+
+    callback->Call(argc, argv);
+  }
 
  protected:
   void SetErrorCode(const int & code) {
@@ -58,10 +65,10 @@ class ErrorAwareWorker : public Nan::AsyncWorker {
   Baton m_baton;
 };
 
-class MessageWorker : public Nan::AsyncWorker {
+class MessageWorker : public ErrorAwareWorker {
  public:
   explicit MessageWorker(Nan::Callback* callback_)
-      : Nan::AsyncWorker(callback_), m_asyncdata() {
+      : ErrorAwareWorker(callback_), m_asyncdata() {
     m_async = new uv_async_t;
     uv_async_init(
       uv_default_loop(),
@@ -189,6 +196,19 @@ class ProducerDisconnect : public ErrorAwareWorker {
   NodeKafka::Producer * producer;
 };
 
+class ProducerFlush : public ErrorAwareWorker {
+ public:
+  ProducerFlush(Nan::Callback*, NodeKafka::Producer*, int);
+  ~ProducerFlush();
+
+  void Execute();
+  void HandleOKCallback();
+
+ private:
+  NodeKafka::Producer * producer;
+  int timeout_ms;
+};
+
 class ConsumerConnect : public ErrorAwareWorker {
  public:
   ConsumerConnect(Nan::Callback*, NodeKafka::Consumer*);
@@ -227,6 +247,7 @@ class ConsumerConsumeLoop : public MessageWorker {
  private:
   NodeKafka::Consumer * consumer;
   const int m_timeout_ms;
+  unsigned int m_rand_seed;
 };
 
 class ConsumerConsume : public ErrorAwareWorker {
@@ -270,23 +291,6 @@ class ConsumerConsumeNum : public ErrorAwareWorker {
   const uint32_t m_num_messages;
   const int m_timeout_ms;
   std::vector<RdKafka::Message*> m_messages;
-};
-
-class ConsumerCommit : public ErrorAwareWorker {
- public:
-  ConsumerCommit(
-    Nan::Callback*, NodeKafka::Consumer*);
-  ConsumerCommit(
-    Nan::Callback*, NodeKafka::Consumer*, consumer_commit_t);
-  ~ConsumerCommit();
-
-  void Execute();
-  void HandleOKCallback();
-  void HandleErrorCallback();
- private:
-  NodeKafka::Consumer * consumer;
-  consumer_commit_t m_conf;
-  bool committing_message;
 };
 
 }  // namespace Workers

@@ -41,6 +41,8 @@ if (cluster.isMaster) {
     'dr_cb': true
   });
 
+  producer.setPollInterval(100);
+
   var total = 0;
   var totalSent = 0;
   var max = 20000;
@@ -87,7 +89,7 @@ if (cluster.isMaster) {
 
   }, 1000);
   producer.connect()
-    .on('error', function(e) {
+    .on('event.error', function(e) {
       errors++;
       errorsArr.push(e);
     })

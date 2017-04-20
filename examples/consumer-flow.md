@@ -22,13 +22,13 @@ var consumer = new Kafka.KafkaConsumer({
 
 var topicName = 'test';
 
-//logging debug messages, if debug is enabled 
+//logging debug messages, if debug is enabled
 consumer.on('event.log', function(log) {
   console.log(log);
 });
 
 //logging all errors
-consumer.on('error', function(err) {
+consumer.on('event.error', function(err) {
   console.error('Error from consumer');
   console.error(err);
 });
@@ -40,14 +40,15 @@ var numMessages = 5;
 consumer.on('ready', function(arg) {
   console.log('consumer ready.' + JSON.stringify(arg));
 
+  consumer.subscribe([topicName]);
   //start consuming messages
-  consumer.consume([topicName]); 
+  consumer.consume();
 });
 
 
 consumer.on('data', function(m) {
   counter++;
-  
+
   //committing offsets every numMessages
   if (counter % numMessages === 0) {
     console.log('calling commit');

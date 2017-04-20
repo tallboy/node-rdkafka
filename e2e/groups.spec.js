@@ -18,9 +18,8 @@ describe('Consumer group/Producer', function() {
 
   var producer;
   var consumer;
-  var md5hash = crypto.createHash('md5');
-  md5hash.update(crypto.randomBytes(20).toString());
-  var grp = 'kafka-mocha-grp' + md5hash.digest('hex');
+  var grp = 'kafka-mocha-grp-' + crypto.randomBytes(20).toString('hex');
+
   var config = {
     'metadata.broker.list': kafkaBrokerList,
     'group.id': grp,
@@ -46,12 +45,9 @@ describe('Consumer group/Producer', function() {
     });
 
     eventListener(producer);
-
   });
 
   beforeEach(function(done) {
-    
-
     consumer = new Kafka.KafkaConsumer(config, {
       'auto.offset.reset': 'largest'
     });
@@ -71,7 +67,7 @@ describe('Consumer group/Producer', function() {
     });
   });
 
-  it('should be able to commit and restart from the committed offset', function(done) {
+  it('should be able to commit, read committed and restart from the committed offset', function(done) {
     this.timeout(30000);
     var topic = 'test';
     var key = 'key';
@@ -82,65 +78,14 @@ describe('Consumer group/Producer', function() {
     };
 
     var tt = setInterval(function() {
-      producer.produce(topic, null, payload, key);
-    }, 100);
-
-    consumer.on('disconnected', function() {
-
-      var consumer2 = new Kafka.KafkaConsumer(config, {
-        'auto.offset.reset': 'largest'
-      });
-
-      consumer2.on('data', function(message) {
-        if (offsets.first) {
-          offsets.first = false;
-          t.equal(offsets.committed, message.offset);
-          clearInterval(tt);
-          consumer2.unsubscribe();
-          consumer2.disconnect(function () {
-            done();
-          });
-        }
-      });
-
-      consumer2.on('ready', function() {
-        consumer2.consume([topic]);
-      });
-      consumer2.connect();
-    });
-
-    consumer.on('data', function(message) {
-      count++;
-      if (count === 3) {
-        consumer.commit(message, function(err) {
-          t.ifError(err);
-          offsets.committed = message.offset;
-          consumer.unsubscribe();
-          consumer.disconnect();
-        });
+      try {
+        producer.produce(topic, null, payload, key);
+      } catch (e) {
+        clearInterval(tt);
       }
-    });
-
-    consumer.consume([topic]);
-
-  });
-  
-  it('should be able to commitSync and restart from the committed offset', function(done) {
-    this.timeout(30000);
-    var topic = 'test';
-    var key = 'key';
-    var payload = new Buffer('value');
-    var count = 0;
-    var offsets = {
-      'first': true
-    };
-
-    var tt = setInterval(function() {
-      producer.produce(topic, null, payload, key);
     }, 100);
 
     consumer.on('disconnected', function() {
-
       var consumer2 = new Kafka.KafkaConsumer(config, {
         'auto.offset.reset': 'largest'
       });
@@ -148,7 +93,7 @@ describe('Consumer group/Producer', function() {
       consumer2.on('data', function(message) {
         if (offsets.first) {
           offsets.first = false;
-          t.equal(offsets.committed, message.offset);
+          t.deepStrictEqual(offsets.committed, message.offset, 'Offset read by consumer 2 incorrect');
           clearInterval(tt);
           consumer2.unsubscribe();
           consumer2.disconnect(function() {
@@ -158,7 +103,8 @@ describe('Consumer group/Producer', function() {
       });
 
       consumer2.on('ready', function() {
-        consumer2.consume([topic]);
+        consumer2.subscribe([topic]);
+        consumer2.consume();
       });
       consumer2.connect();
     });
@@ -166,21 +112,22 @@ describe('Consumer group/Producer', function() {
     consumer.on('data', function(message) {
       count++;
       if (count === 3) {
-        consumer.commitSync(message);
+        consumer.commitMessageSync(message);
+        // test consumer.committed( ) API
         consumer.committed(5000, function(err, topicPartitions) {
           t.ifError(err);
-          // See https://github.com/Blizzard/node-rdkafka/issues/65
-          //t.equal(1, topicPartitions.length);
-          offsets.committed = message.offset;
+          t.deepStrictEqual(topicPartitions.length, 1);
+          t.deepStrictEqual(topicPartitions[0].offset, message.offset + 1, 'Offset read by consumer 1 incorrect');
+          offsets.committed = message.offset + 1;
           consumer.unsubscribe();
           consumer.disconnect();
         });
-        
+
       }
     });
 
-    consumer.consume([topic]);
-
+    consumer.subscribe([topic]);
+    consumer.consume();
   });
 
 });

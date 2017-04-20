@@ -13,6 +13,7 @@ var t = require('assert');
 var Kafka = require('../');
 var kafkaBrokerList = process.env.KAFKA_HOST || 'localhost:9092';
 var eventListener = require('./listener');
+var topic = 'test';
 
 describe('Consumer/Producer', function() {
 
@@ -39,9 +40,7 @@ describe('Consumer/Producer', function() {
   });
 
   beforeEach(function(done) {
-    var md5hash = crypto.createHash('md5');
-    md5hash.update(crypto.randomBytes(20).toString());
-    var grp = 'kafka-mocha-grp-' + md5hash.digest('hex');
+    var grp = 'kafka-mocha-grp-' + crypto.randomBytes(20).toString('hex');
 
     consumer = new Kafka.KafkaConsumer({
       'metadata.broker.list': kafkaBrokerList,
@@ -76,9 +75,8 @@ describe('Consumer/Producer', function() {
     });
   });
 
-  it('should be able to produce and consume messages: subscribe/consumeOnce', function(done) {
+  it('should be able to produce, consume messages, read position: subscribe/consumeOnce', function(done) {
     this.timeout(20000);
-    var topic = 'test';
 
     crypto.randomBytes(4096, function(ex, buffer) {
 
@@ -88,8 +86,9 @@ describe('Consumer/Producer', function() {
 
       var offset;
 
-      producer.once('delivery-report', function(report) {
+      producer.once('delivery-report', function(err, report) {
         clearInterval(tt);
+        t.ifError(err);
         offset = report.offset;
       });
 
@@ -98,8 +97,8 @@ describe('Consumer/Producer', function() {
       var ct;
 
       var consumeOne = function() {
-        consumer.consume(function(err, message) {
-          if (err && err.code === -191) {
+        consumer.consume(1, function(err, messages) {
+          if (messages.length === 0 || (err && err.code === -191)) {
             producer.produce(topic, null, buffer, null);
             ct = setTimeout(consumeOne, 100);
             return;
@@ -108,11 +107,19 @@ describe('Consumer/Producer', function() {
             return;
           }
 
+          var message = messages[0];
+
           t.ifError(err);
           t.equal(Array.isArray(consumer.assignments()), true, 'Assignments should be an array');
           t.equal(consumer.assignments().length > 0, true, 'Should have at least one assignment');
           t.equal(buffer.toString(), message.value.toString(),
             'message is not equal to buffer');
+
+          // test consumer.position as we have consumed
+          var position = consumer.position();
+          t.equal(position.length, 1);
+          t.deepStrictEqual(position[0].partition, 0);
+          t.ok(position[0].offset >= 0);
           done();
         });
       };
@@ -122,21 +129,21 @@ describe('Consumer/Producer', function() {
 
     });
   });
-  
+
   it('should be able to produce and consume messages: consumeLoop', function(done) {
     this.timeout(20000);
-    var topic = 'test';
     var key = 'key';
-    
+
     crypto.randomBytes(4096, function(ex, buffer) {
 
       var tt = setInterval(function() {
         producer.poll();
       }, 100);
 
-      producer.once('delivery-report', function(report) {
+      producer.once('delivery-report', function(err, report) {
         //console.log('delivery-report: ' + JSON.stringify(report));
         clearInterval(tt);
+        t.ifError(err);
         t.equal(topic, report.topic, 'invalid delivery-report topic');
         t.equal(key, report.key, 'invalid delivery-report key');
         t.ok(report.offset >= 0, 'invalid delivery-report offset');
@@ -149,8 +156,9 @@ describe('Consumer/Producer', function() {
         t.ok(message.offset >= 0, 'invalid message offset');
         done();
       });
-      
-      consumer.consume([topic]);
+
+      consumer.subscribe([topic]);
+      consumer.consume();
 
       setTimeout(function() {
         producer.produce(topic, null, buffer, key);
@@ -159,4 +167,126 @@ describe('Consumer/Producer', function() {
     });
   });
 
+  it('should be able to produce and consume messages: empty key and empty value', function(done) {
+    this.timeout(20000);
+    var key = '';
+    var value = new Buffer('');
+
+    var tt = setInterval(function() {
+      producer.poll();
+    }, 100);
+
+    consumer.once('data', function(message) {
+      clearInterval(tt);
+      t.equal(value.toString(), message.value.toString(), 'invalid message value');
+      t.equal(key, message.key, 'invalid message key');
+      done();
+    });
+
+    consumer.subscribe([topic]);
+    consumer.consume();
+
+    setTimeout(function() {
+      producer.produce(topic, null, value, key);
+    }, 2000);
+  });
+
+  it('should be able to produce and consume messages: null key and null value', function(done) {
+    this.timeout(20000);
+    var key = null;
+    var value = null;
+
+    var tt = setInterval(function() {
+      producer.poll();
+    }, 100);
+
+    consumer.once('data', function(message) {
+      clearInterval(tt);
+      t.equal(value, message.value, 'invalid message value');
+      t.equal(key, message.key, 'invalid message key');
+      done();
+    });
+
+    consumer.subscribe([topic]);
+    consumer.consume();
+
+    setTimeout(function() {
+      producer.produce(topic, null, value, key);
+    }, 2000);
+  });
+
+  describe('Exceptional cases', function() {
+    var grp = 'kafka-mocha-grp-' + crypto.randomBytes(20).toString('hex');
+    var consumerOpts = {
+      'metadata.broker.list': kafkaBrokerList,
+      'group.id': grp,
+      'fetch.wait.max.ms': 1000,
+      'session.timeout.ms': 10000,
+      'enable.auto.commit': false,
+      'debug': 'all'
+      // paused: true,
+    };
+
+    beforeEach(function(done) {
+      consumer = new Kafka.KafkaConsumer(consumerOpts, {
+        'auto.offset.reset': 'largest',
+      });
+
+      consumer.connect({}, function(err, d) {
+        t.ifError(err);
+        t.equal(typeof d, 'object', 'metadata should be returned');
+        done();
+      });
+
+      eventListener(consumer);
+    });
+
+    afterEach(function(done) {
+      this.timeout(10000);
+      consumer.disconnect(function() {
+        done();
+      });
+    });
+
+    it('should async commit after consuming', function(done) {
+      this.timeout(20000);
+      var key = '';
+      var value = new Buffer('');
+
+      var lastOffset = null;
+
+      consumer.once('data', function(message) {
+        lastOffset = message.offset;
+        consumer.commitMessage(message);
+
+        consumer.disconnect(function() {
+          consumer.connect({}, function(err, d) {
+            t.ifError(err);
+            t.equal(typeof d, 'object', 'metadata should be returned');
+
+            consumer.once('data', function(message) {
+              console.log('First message offset:', lastOffset, 'New message',
+                'offset:', message.offset);
+              done(new Error('Should never be here'));
+            });
+
+            consumer.subscribe([topic]);
+            consumer.consume();
+
+            setTimeout(function() {
+              done();
+            }, 5000);
+          });
+        });
+      });
+
+      consumer.subscribe([topic]);
+      consumer.consume();
+
+      setTimeout(function() {
+        producer.produce(topic, null, value, key);
+      }, 2000);
+    });
+
+  });
 });
